@@ -18,98 +18,48 @@ var throwError = require('../lib/throwError');
 var clone = require('clone');
 var VhostChecker = require('../lib/VhostChecker');
 
+var Hipcheck = require('../lib/Hipcheck');
+
 program
   .version(pkg.version)
   .usage('[options] <url ...>')
   .option('-d, --dryrun',
-    'Enable dryrun (health check simulation). Default: false')
-  .option('-m, --method',
+    'Enable dryrun (health check simulation). Flag.')
+  .option('-m, --method <s>',
     'URL Method to health check eg. GET. Default: GET')
-  .option('-s, --expected_status',
-    'Expected response status code. Default: 200')
+  .option('-s, --expect_status <n>',
+    'Expected response status code. Default: 200', parseInt)
   .option('-t, --timeout <n>',
     'Max timeout in seconds for a healthy response. Default: 3', parseFloat)
   .option('-i, --interval <n>',
-    'Interval in seconds of how often to ping the domain. Default: 3', parseFloat)
-  .option('-c, --hosts_check_interval <n>',
+    'Interval in seconds of how often to ping the domain (not concurrent, waits for response). Default: 3', parseFloat)
+  .option('-h, --hosts_interval <n>',
     'Interval in seconds of how often to check for host changes. Default: 3', parseFloat)
-  .option('-r, --redis',
+  .option('-r, --redis <s>',
     "Hipache's redis host (hostname:port). Default: localhost:6379")
-  .option('-p, --redis_password',
-    "Hipache's redis database password")
-  .option('-e, --rollbar_token',
-    "Rollbar token for error tracking");
+  .option('-p, --redis_password <s>',
+    "Hipache's redis database password. Default: undefined")
+  .option('-c, --cache_path <s>',
+    "Disk location where to cache. Default: $HOME/.hipcheck")
+  .option('-n, --no-cache',
+    "Disk location where to cache. Flag.")
+  .option('-f, --delete-cache',
+    "Delete cache (reset cached hosts). Flag.")
+  .option('-k, --kill-delisted',
+    "Remove delisted hosts to avoid excessive error responses from bad hosts. Flag.")
+  .option('-e, --rollbar <s>',
+    "Rollbar token for error tracking. Default: undefined");
 
 program.parse(process.argv);
 
-// Defaults
-var defaults = {
-  dryrun          : false,
-  method          : 'GET',
-  expected_status : 200,
-  timeout         : 3,
-  interval        : 3,
-  hosts_check_interval: 3,
-  redis           : '127.0.0.1:6379'
-};
-Object.keys(defaults).forEach(function (key) {
-  program[key] = program[key] || defaults[key];
-});
-
 program.url = program.args[0];
 
-if (!program.url) {
-  throwError('Missing argument "url"',
-    new Error('Missing argument "url"'));
-}
-else if (!~program.url.indexOf('//')) {
-  throwError('"url" must include protocol (eg. http://)',
-    new Error('"url" must include protocol (eg. http://)'));
-}
+var hipcheck = new Hipcheck(program);
 
-// Intervals to milliseconds
-program.timeout *= 1000;
-program.interval *= 1000;
-program.hosts_check_interval *= 1000;
-
-// Init Rollbar
-
-if (program.rollbar) {
-  var rollbar = require('rollbar');
-  rollbar.init(program.rollbar);
-}
-
-// Init Redis
-var redisHostSplit = program.redis.split(':');
-program.redisHostname = redisHostSplit[0];
-program.redisPort = redisHostSplit[1] || '6379';
-var redisPassword = program.redis_password;
-program.redisOpts = program.redis_password ?
-  { auth_pass: program.redis_password } : {};
-var redis = redis.createClient(program.redisPort, program.redisHostname, program.redisOpts);
-
-redis.on('error', throwError.bind(null, 'Redis Connection Error'));
-
-var vhostChecker = new VhostChecker(program);
-
-vhostChecker.on('error', function (err, source) {
-  console.error(err);
-  if (program.rollbar) {
-    rollbar.handleError(err);
-  }
-});
-vhostChecker.on('warn', function (message, source) {
-  console.log(message);
-  if (program.rollbar) {
-    rollbar.reportMessage(err, 'warn');
-  }
-});
-vhostChecker.on('log', function (message, source) {
-  console.log(message);
-});
-
-// Start vhostChecker on Redis Connect
-redis.on('connect', vhostChecker.start.bind(vhostChecker));
+// Start
+hipcheck.start();
 
 // End on Process Exit
-process.on('exit', vhostChecker.stop.bind(vhostChecker));
+process.on('exit', function () {
+  hipcheck.stop();
+});
